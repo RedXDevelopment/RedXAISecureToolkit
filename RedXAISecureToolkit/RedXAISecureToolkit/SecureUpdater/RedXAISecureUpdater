@@ -1,0 +1,92 @@
+# RedXAIUpdater.py
+
+import requests
+import json
+import os
+import shutil
+import configparser
+from RedXAISecureToolkit import*
+
+class RedXAIUpdater:
+    def __init__(self, config_path="installer.cfg", local_build="XAIBuild.json"):
+        self.local_build_path = local_build
+        self.config_path = config_path
+        self.remote_url = None
+        self.base_url = None
+
+    def fetch_remote_build(self, url):
+        self.remote_url = url
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            data = response.json()
+            self.base_url = data.get("BaseUrl", "")
+            return data
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch remote build info: {e}")
+
+    def fetch_local_build(self):
+        if not os.path.exists(self.local_build_path):
+            return None
+        with open(self.local_build_path) as f:
+            return json.load(f)
+
+    def get_install_path(self):
+        if not os.path.exists(self.config_path):
+            print("Warning: installer.cfg not found. Using current directory.")
+            return os.getcwd()
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+
+        return config.get("Installation", "InstallPath", fallback=os.getcwd())
+
+    def download_file(self, url, dest):
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, 'wb') as file:
+                for chunk in response.iter_content(1024):
+                    file.write(chunk)
+            print(f"Downloaded: {dest}")
+        except requests.RequestException as e:
+            print(f"Error downloading {url}: {e}")
+
+    def update_project(self, remote_data, install_path):
+        files = remote_data.get("Files", {})
+        base_url = remote_data.get("BaseUrl", self.base_url)
+
+        # Delete files
+        for file_path in files.get("delete", []):
+            full_path = os.path.join(install_path, file_path)
+            if os.path.exists(full_path):
+                if os.path.isdir(full_path):
+                    shutil.rmtree(full_path)
+                else:
+                    os.remove(full_path)
+                print(f"Deleted: {full_path}")
+
+        # Add or modify files
+        for action in ["add", "modify"]:
+            for file_path in files.get(action, []):
+                url = base_url + file_path
+                dest_path = os.path.join(install_path, file_path)
+                self.download_file(url, dest_path)
+
+        # Save the new local build file
+        with open(self.local_build_path, "w") as f:
+            json.dump(remote_data, f, indent=4)
+
+    def check_for_updates(self, remote_url):
+        print("🔍 Checking for updates...")
+        remote_data = self.fetch_remote_build(remote_url)
+        local_data = self.fetch_local_build()
+
+        if local_data is None or remote_data["AppVersion"] > local_data["AppVersion"]:
+            print(f"⬆️ New update found: {remote_data['AppVersion']}")
+            install_path = self.get_install_path()
+            self.update_project(remote_data, install_path)
+            print("✅ Update applied successfully.")
+        else:
+            print("✅ Your application is already up to date.")
